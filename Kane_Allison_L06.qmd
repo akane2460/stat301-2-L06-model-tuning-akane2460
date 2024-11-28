@@ -1,0 +1,541 @@
+---
+title: "L06 Model Tuning"
+subtitle: "Data Science 2 with R (STAT 301-2)"
+author: "Allison Kane"
+date: today
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    embed-resources: true
+    code-fold: show
+    link-external-newwindow: true
+    
+execute:
+  warning: false
+  
+from: markdown+emoji  
+---
+
+::: {.callout-important collapse="true"}
+## Load Package(s) & Setting a Seed
+
+Random processes present in the repo. Seeds are set ahead of any random process. R scripts with random processes are labeled accordingly.
+
+```{r}
+#| label: load packages
+#| echo: false
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+library(here)
+
+tidymodels_prefer()
+
+```
+
+:::
+
+::: {.callout-tip icon="false"}
+## Github Repo Link
+
+[Allison Repo Link](https://github.com/stat301-2-2024-winter/L06-model-tuning-akane2460.git)
+:::
+
+## Overview
+
+The goal for this lab is to start using resampling methods to both tune and compare models. Instead of comparing one candidate model from each model type we will now explore several candidate sub-models from each model type by tuning hyperparameters. The lab focuses on hyperparameter tuning, but this technique easily extends tuning to preprocessing techniques or tuning of structural parameters. Ultimately leading to the selection of a final/winning/best model.
+
+
+## Data
+
+We will analyze a simulated dataset, designed to accompany the book [An Introduction to Statistical Learning with Applications in R](https://www.statlearning.com/). The data set consists of 400 observations concerning the sale of child car seats at different stores. A copy of the dataset can be found in the `data/` subdirectory along with a codebook.
+
+## Exercise
+
+::: {.callout-note icon="false"}
+## Prediction goal
+
+Our goal is to predict car seat sales as accurately as possible.
+:::
+
+### Task 1
+
+Load the data from `data/carseats.csv` into *R* and familiarize yourself with the variables it contains using the codebook (`data/carseats_codebook.txt`). When loading the data make sure to type variables as factors where appropriate --- in this case we will type all factor variables as nominal (ignore ordering). That is, don't type any as an ordered factor.
+
+1.  After reading in the dataset, explore/describe the distribution of the outcome variable `sales`. Are there any issues or concerns about the outcome variable?
+2.  We also should perform a quick quality check of the entire dataset. This is not a full EDA. Just checking that it is read in correctly, check dimensions, and for any major missingness issues. This can be done with a quick `skim` of the dataset or the use of other tools like the `naniar` package.
+
+There is no need to show code for this task.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+This has been completed. There are no major issues or concerns regarding the outcome variable `sales`. Its distribution is shown below, with very little skew. The typical value of sales in this dataset is approximately 7.49 thousand USD, with the variable ranging from 0 to 16.27 thousand USD. 
+
+![Outcome Variable Sales](results/sales_distribution.png)
+
+There are not many missingness issues present in the data. The original dataset contains 14 variables, including 13 predictors and 1 outcome (`sales`) variables. 
+
+:::
+
+
+### Task 2
+
+Time to split the data. Use a proportion of 0.75 to split the data and use stratified sampling.
+
+After splitting the data, apply V-fold cross validation to the training dataset using 10 folds and 5 repeats --- use stratified sampling.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 2
+#| eval: false
+
+## splitting data----
+# set seed
+set.seed(802345)
+
+# split the data
+carseats_split <- carseats |> 
+  initial_split(prop = .75, strata = age)
+
+carseats_train <- carseats_split |> training()
+carseats_test <- carseats_split |>  testing()
+
+# fold the data
+carseats_fold <- carseats_train |> 
+  vfold_cv(v = 10, repeats = 5, strata = sales)
+
+# write out datasets
+save(carseats_split, file = here("data/carseats_split.rda"))
+save(carseats_train, file = here("data/carseats_train.rda"))
+save(carseats_test, file = here("data/carseats_test.rda"))
+save(carseats_fold, file = here("data/carseats_fold.rda"))
+
+```
+
+
+:::
+
+How many times will you be fitting/training each model during the model competition/comparison stage?
+
+::: {.callout-tip icon="false"}
+## Solution
+
+50 times
+
+:::
+
+On each fold, about how much data will be used for training the model and about how much will be used to produce an assessment estimate (fold RMSE)? Do you think this is reasonable? Explain.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+270 (i.e. 75% of our 300 training data). 30 will be used to produce an assessment estimate. This does not seem reasonable, 30 data points does not seem like enough data points to estimate a model's effectiveness. To address this, we could reduce the number of folds, use a bootstrap approach or change the initial split.
+
+:::
+
+### Task 3
+
+Thinking ahead, we plan to fit 3 model types: k-nearest neighbors, random forest, and boosted tree. Knowing the models we plan to fit informs our preprocessing/recipes. In this case we can get away with using one recipe:
+
+::: {.callout-note collapse="true" icon="false"}
+## Recipe
+
+The steps described below are not necessarily in the correct order.
+
+-   Predict the target variable with all other variables
+-   One-hot encode all categorical predictors
+-   Filter out variables have have zero variance
+-   Center & scale all predictors
+:::
+
+Again, thinking ahead we will be tuning our tree-based models. One of those important hyperparameters we will be tuning is `mtry`, the number of randomly selected predictor variables that will be selected at each node to split on. This means we need to have a sense of how many predictor columns/variables will be available to use. How many predictor columns/variables are there in the dataset after we've processed it? We will use this number later to determine appropriate values of `mtry` to explore.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 3
+#| eval: false
+
+# tree-based ----
+carseats_recipe <- recipe(sales ~ ., data = carseats_train) |> 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |> 
+  step_zv(all_predictors()) |> 
+  step_normalize(all_numeric_predictors())
+
+carseats_recipe |>
+  prep() |>
+  bake(new_data = NULL) |>
+  glimpse()
+
+```
+
+There are 14 predictor variables after this is completed: `comp_price`, `income`, `advertising`, `population`, `price`, `age`, `education`, `shelve_loc_Bad`, `shelve_loc_Medium`, `shelve_loc_Good`, `urban_No`, `urban_Yes`, `us_No`, and `us_Yes`.
+
+:::
+
+### Task 4
+
+Each model type should have its own script, begin by building the workflows for training and tuning the 3 models types.
+
+When building the workflows you will need the preprocessing and model specification. Since we are tuning hyperparameters for our model types we must identify the hyperparameters we wish to tune in the model specification.
+
+1.  A $k$-nearest neighbors model with the `kknn` engine (tune `neighbors`);
+2.  A random forest model with the `ranger` engine (tune `mtry` and `min_n`, set `trees = 1000`);
+3.  A boosted tree model with the `xgboost` engine (tune `mtry`, `min_n`, and `learn_rate`).
+
+*Hint:* Make sure engine packages are installed.
+
+Example for random forest model specification:
+
+```{r}
+#| label: rf-spec-example
+#| eval: false
+
+# random forest specification
+rf_model <- 
+  rand_forest(
+    mode = "regression",
+    trees = 1000, 
+    min_n = tune(),
+    mtry = tune()
+    ) |> 
+  set_engine("ranger")
+
+
+
+```
+
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 4
+#| eval: false
+
+boosted_spec <- 
+  boost_tree(mtry = tune(), min_n = tune(), learn_rate = tune()) |> 
+  set_engine("xgboost") |> 
+  set_mode("regression")
+
+# define workflows ----
+boosted_model <-
+  workflow() |> 
+  add_model(boosted_spec) |> 
+  add_recipe(carseats_recipe)
+
+```
+
+
+:::
+
+
+### Task 5
+
+Before workflows can be trained, the hyperparameter values to use must be identified. Identifying which set of hyperparameter values to use, really means identifying which versions of the model types to train (sometimes referred to as sub-models).
+
+Typically we don't have a great idea what these values should be so we try out different values. One way to do this is with a regular grid.
+
+For each model type, setup and store a regular grid with 5 levels of possible values for each hyperparameter we identified for tuning.
+
+Example for random forest model:
+
+```{r}
+#| label: rf-tune-grid
+#| eval: false
+
+# hyperparameter tuning values ----
+
+# check ranges for hyperparameters
+hardhat::extract_parameter_set_dials(rf_model)
+
+# change hyperparameter ranges
+rf_params <- parameters(rf_model) %>% 
+  # N:= maximum number of random predictor columns we want to try 
+  # should be less than the number of available columns
+  update(mtry = mtry(c(1, N))) 
+
+# build tuning grid
+rf_grid <- grid_regular(rf_params, levels = 5)
+```
+
+-   The hyperparameters `min_n` and `neighbors` have default tuning ranges that should work reasonably well (at least we will live with them), so no need to update their defaults.
+
+-   For `mtry`, use `update()` (as shown above) to change the upper limit value to the number of predictor columns.
+
+-   For `learn_rate`, use `update()` to set `range = c(-5, -0.2)`.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 5
+#| eval: false
+
+# check ranges for hyperparameters
+hardhat::extract_parameter_set_dials(boosted_model)
+
+# change hyperparameter ranges
+boosted_params <- parameters(boosted_model) %>% 
+  update(mtry = mtry(c(1, 14)), learn_rate = learn_rate(c(-5, -0.2)))
+
+# build tuning grid
+boosted_grid <- grid_regular(boosted_params, levels = 5)
+
+```
+
+
+:::
+
+### Task 6
+
+We are about to complete the tuning and model comparison step --- pick the best model. It would be a good idea to know how many models are competing and how many trainings/fittings that will need to be done. Fill in the missing values in @tbl-mod-totals.
+
+| Model Type          | Number of models | Total number of trainings |
+|---------------------|-----------------:|--------------------------:|
+| K-nearest neighbors |       5          |            250            |
+| Random forest       |       25         |            1250           |
+| Boosted tree        |       125        |            6250           |
+| **Total**           |       155        |            7750           |
+
+: Model Training Totals {#tbl-mod-totals .striped .hover}
+
+Suppose each model takes about 30 seconds to fit. How many minutes would it take to train all of these models, if fitting one after the other (meaning fit sequentially)? Describe how parallel processing could help to reduce the time needed to train all of these models.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+This would take sequentially approximately 3,875 minutes (or 232,500 seconds) to fit (7750 total number of trainings * 30 seconds).
+
+Parallel processing could be helpful in reducing this time because instead of having to wait for each fit to be completed prior to starting a new one, multiple could be conducted at once. This could substantially reduce the wait time needed. 
+
+:::
+
+### Task 7
+
+We are now ready to tune and compare models. Knowing that we plan to compare models we need to decide on a performance metric before hand (best scientific practice). We will use RMSE which we know is calculated by default on the resamples/folds. 
+
+Use `tune_grid()` to complete the tuning process for each workflow. Supply your folded data and the appropriate grid of parameter values as arguments to `tune_grid()`. 
+
+::: callout-caution
+## WARNING: STORE THE RESULTS OF THIS CODE 
+
+You will **NOT** want to re-run this code each time you render this document. You **MUST** run model fitting in an R script and store the results as an rda file using `save()`. Suggest saving the workflow too. 
+
+You are expected to use parallel processing which will save a significant amount of time. **Report the number of cores/threads you will be using.**
+
+We also suggest using RStudio's background jobs functionality. If you run as background jobs you can report the run times, but it is not required.
+:::
+
+Example for random forest:
+
+```{r}
+#| label: rf-training
+#| eval: false
+
+# fit workflows/models ----
+# set seed
+set.seed(123567)
+rf_tuned <- 
+  rf_wflow |> 
+  tune_grid(
+    carseat_folds, 
+    grid = rf_grid, 
+    control = control_grid(save_workflow = TRUE)
+  )
+```
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 7
+#| eval: false
+
+# parallel processing 
+num_cores <- parallel::detectCores(logical = TRUE)
+
+registerDoMC(cores = num_cores)
+
+# registerDoSEQ() use to reset to sequential processing if needed
+
+# fit workflows/models ----
+# set seed
+set.seed(0927074)
+
+boosted_tuned <- 
+  boosted_model |> 
+  tune_grid(
+    carseats_fold, 
+    grid = boosted_grid, 
+    control = control_grid(save_workflow = TRUE)
+  )
+
+# write out results (fitted/trained workflows) ----
+save(boosted_tuned, file = here("results/boosted_tuned.rda"))
+
+
+```
+
+
+8 cores used.
+
+:::
+
+### Task 8
+
+Time to compare sub-models. Meaning time to explore the tuning process for the 3 model types.
+
+We will start with a visual inspection by using `autoplot()` on the tuning results from Task 7. Set the `metric` argument of `autoplot()` to `"rmse"` --- we previously selected that as our comparison metric. If you don't set this argument, then it will produce plots for $R^2$ as well --- doesn't hurt, but it gets crowded.
+
+Pick one of the three `autoplot()`s you've produced and describe it in your own words. What happens to the RMSE as the values of the tuning parameters change? 
+
+There is no need to show code for this task.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+![RMSE of KKNN tuned model](results/kknn_tuned_rmse_plot.png)
+In the KKNN tuned model plot, we see as the number of nearest neighbors increases, the RMSE decreases, slowly approaching 1.9. This could indicate that with greater tuning, the RMSE approaches a minimum value (decreasing from initial value of about 2.32. This value is achieved at the optimal number of nearest neighbors 14. 
+
+:::
+
+### Task 9
+
+Might be able to use the graphs in Task 8 to determine the best set of hyperparameters for each model type, but it is easier to use `select_best()` on each of the objects containing the tuning information. For each model type, what would the best hyperparameters be (remember we are using RMSE for comparisons)?
+
+Example for random forest:
+
+```{r}
+#| label: best-hyperparams
+#| eval: false
+select_best(rf_tuned, metric = "rmse")
+```
+
+::: {.callout-tip icon="false"}
+## Solution
+
+For each model type, the best hyperparameters would be Preprocessor1_Model120 for boosted, Preprocessor1_Model5 for kknn, and Preprocessor1_Model05 for rf.
+
+:::
+
+Build a table that provides the mean RMSE, its standard error, and n (number of times RMSE we estimated) per model type. Which model type produced the best model? Explain how you made your choice. From the first part of the Task you should be able to identify this model's hyperparameter value(s). 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: tbl-task9
+#| echo: false
+#| message: false
+#| tbl-cap: Best hyperparameters for each model
+
+load(here("results/min_rmse.rda"))
+
+min_rmse_table <- min_rmse |> 
+  select(wflow_id, mean, n, std_err) |> 
+  knitr::kable()
+
+min_rmse_table
+```
+
+Based on this table, we can identify that the best model is the boosted tree, with the lowest RMSE of approximately 1.489 and a standard error of approximately .0305. The kknn cannot compete, with the highest RMSE of 1.885. The standard error of this metric is .0281, failing to overlap within 1 standard error the boosted tree's RMSE estimate. The rf is a similar situation, with an approximate 1.559 RSME and standard error of .0262. Again, the ranges within 1 standard error of each model's respective RMSE value do not overlap. This indicates that the boosted is the best model.
+
+The best hyperparameter values for this boosted model is Preprocessor1_Model120
+
+:::
+
+
+### Task 10
+
+We can now train the winning/best model identified in the last task on the entire training data set.
+
+Example, if the random forest performed best:
+
+```{r}
+#| label: train-best-model
+#| eval: false
+
+# finalize workflow ----
+final_wflow <- rf_tune |> 
+  extract_workflow(rf_tune) |>  
+  finalize_workflow(select_best(rf_tune, metric = "rmse"))
+
+# train final model ----
+# set seed
+# set.seed()
+final_fit <- fit(final_wflow, carseat_train)
+```
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: task 10
+#| eval: false
+
+# finalize workflow 
+final_wflow <- boosted_tuned |> 
+  extract_workflow(boosted_tuned) |>  
+  finalize_workflow(select_best(boosted_tuned, metric = "rmse"))
+
+# train final model ----
+# set seed
+set.seed(0298375)
+final_fit <- fit(final_wflow, carseats_train)
+
+# write out results (fitted/trained workflows) ----
+save(final_fit, file = here("results/final_fit.rda"))
+
+```
+
+
+:::
+
+
+### Task 11
+
+After fitting/training the best model in the last task, assess the model's performance on the test set using RMSE, MAE, and $R^2$. Provide an interpretation for each.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+```{r}
+#| label: tbl-task11
+#| echo: false
+#| message: false
+#| tbl-cap: RMSE, MAE, and $R^2$ Boosted Model
+
+load(here("results/final_fit_metrics.rda"))
+
+final_fit_metrics |> 
+  knitr::kable()
+
+```
+
+With a RMSE value of approximately 1.48, this indicates that the model's predicted values on average deviate by 1.48 thousand USD from the true values. This is a relatively low value, indicating somewhat decent performance.
+
+With a MAE value of approximately 1.16, this indicates that the average absolute distance in typical predictions of `sales` from the true values is approximately 1.16 thousand USD.
+
+For both MAE and RMSE values, smaller values indicate the model is more accurate.
+
+With a $R^2$ value of approximately 0.775, this indicates that approximately 77.5% of the variance in `sales` is explained by this model. This indicates that this model has moderately strong predictive power. 
+
+:::
+
+### Task 12
+
+Visualize your results by plotting the predicted observations by the observed observations --- see Figure 9.2 in Tidy Modeling with R. 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+![Predicted vs.Sales](results/predicted_vs_sales_plot.png)
+
+:::
